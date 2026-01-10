@@ -7,7 +7,7 @@ try:
 except Exception:
     aiohttp_web = None
 
-# —— Resolve Comfy root and vantage dir ——
+# —— Resolve Comfy root and onix dir ——
 _here = os.path.abspath(os.path.dirname(__file__))
 _root = _here
 for _ in range(6):
@@ -16,8 +16,8 @@ for _ in range(6):
     _root = os.path.dirname(_root)
 
 COMFY_ROOT = _root
-VANTAGE_DIR = os.path.join(COMFY_ROOT, "vantage")
-os.makedirs(VANTAGE_DIR, exist_ok=True)
+ONIX_DIR = os.path.join(COMFY_ROOT, "Onix-Proyect-Managment")
+os.makedirs(ONIX_DIR, exist_ok=True)
 
 def _log(msg: str):
     try:
@@ -25,8 +25,8 @@ def _log(msg: str):
     except Exception:
         pass
 
-_log("[Vantage] node module loaded")
-_log(f"[Vantage] COMFY_ROOT={COMFY_ROOT}, VANTAGE_DIR={VANTAGE_DIR}")
+_log("[Onix] node module loaded")
+_log(f"[Onix] COMFY_ROOT={COMFY_ROOT}, ONIX_DIR={ONIX_DIR}")
 
 def _last_index_plus_one(base_dir: str) -> int:
     try:
@@ -48,31 +48,31 @@ def _last_index_plus_one(base_dir: str) -> int:
 def _list_projects():
     try:
         items = []
-        if os.path.isdir(VANTAGE_DIR):
-            for name in os.listdir(VANTAGE_DIR):
+        if os.path.isdir(ONIX_DIR):
+            for name in os.listdir(ONIX_DIR):
                 if name.lower().endswith(".json"):
                     items.append(name)
         items.sort(key=lambda s: s.lower())
         return items
     except Exception as e:
-        _log(f"[Vantage] _list_projects error: {e}")
+        _log(f"[Onix] _list_projects error: {e}")
         return []
 
 # —— HTTP API: preview and list ——
-async def vantage_preview(request):
-    _log("[Vantage] preview hit")
+async def onix_preview(request):
+    _log("[Onix] preview hit")
     if aiohttp_web is None:
         # Fallback: return basic JSON-like dict; Comfy will try to serialize it
         return {"error": "aiohttp not available"}  # middleware will wrap
 
     fname = request.query.get("file", "")
     fname = _safe_name(fname)
-    _log(f"[Vantage] preview file param: {fname}")
+    _log(f"[Onix] preview file param: {fname}")
 
     if not fname or not fname.lower().endswith(".json"):
         return aiohttp_web.json_response({"error": "bad file"}, status=400)
 
-    path = os.path.join(VANTAGE_DIR, fname)
+    path = os.path.join(ONIX_DIR, fname)
     if not os.path.isfile(path):
         return aiohttp_web.json_response({"error": "not found"}, status=404)
 
@@ -91,7 +91,7 @@ async def vantage_preview(request):
         line_count = len(prompt.split("\n"))  # number of lines [web:19]
 
     proj_id = data.get("id") or uuid.uuid4().hex
-    proj_dir = os.path.join(VANTAGE_DIR, proj_id)
+    proj_dir = os.path.join(ONIX_DIR, proj_id)
     start_from_folders = _last_index_plus_one(proj_dir)
     
     resp = {
@@ -105,12 +105,12 @@ async def vantage_preview(request):
     }
     return aiohttp_web.json_response(resp, status=200)
 
-async def vantage_list_projects(request):
+async def onix_list_projects(request):
     try:
         files = [f for f in _list_projects() if f.lower().endswith(".json")]
         return aiohttp_web.json_response({"files": files}, status=200)
     except Exception as e:
-        _log(f"[Vantage] list_projects error: {e}")
+        _log(f"[Onix] list_projects error: {e}")
         return aiohttp_web.json_response({"files": []}, status=200)
 
 def _load_json(path: str) -> Dict[str, Any]:
@@ -126,35 +126,35 @@ def _save_json(path: str, data: Dict[str, Any]) -> None:
 def _safe_name(s: str) -> str:
     return "".join(c for c in (s or "") if c.isalnum() or c in "._-")
 
-def get_vantage_dir() -> str:
-    """Return the absolute path to the shared Vantage directory."""
-    return VANTAGE_DIR
+def get_onix_dir() -> str:
+    """Return the absolute path to the shared Onix directory."""
+    return ONIX_DIR
 
 def setup_routes(app):
     if aiohttp_web is None:
-        _log("[Vantage] aiohttp not available; routes not registered")
+        _log("[Onix] aiohttp not available; routes not registered")
         return
     try:
-        app.router.add_get("/vantage/preview", vantage_preview)
-        _log("[Vantage] Registered /vantage/preview")
+        app.router.add_get("/onix/preview", onix_preview)
+        _log("[Onix] Registered /onix/preview")
     except Exception as e:
-        _log(f"[Vantage] preview route exists/failed: {e}")
+        _log(f"[Onix] preview route exists/failed: {e}")
     try:
-        app.router.add_get("/vantage/projects", vantage_list_projects)
-        _log("[Vantage] Registered /vantage/projects")
+        app.router.add_get("/onix/projects", onix_list_projects)
+        _log("[Onix] Registered /onix/projects")
     except Exception as e:
-        _log(f"[Vantage] projects route exists/failed: {e}")
+        _log(f"[Onix] projects route exists/failed: {e}")
 
 # Fallback registration at import time
 try:
     from server import PromptServer as _PS
     setup_routes(_PS.instance.app)
-    _log("[Vantage] Routes registered via PromptServer fallback")
+    _log("[Onix] Routes registered via PromptServer fallback")
 except Exception as _e:
-    _log(f"[Vantage] Fallback route registration failed: {_e}")
+    _log(f"[Onix] Fallback route registration failed: {_e}")
 
 # —— Node class (only the relevant apply shown) ——
-class VantageProject:
+class OnixProject:
     @classmethod
     def INPUT_TYPES(cls):
         # Include "none" always in enum to avoid validation flaps
@@ -174,9 +174,9 @@ class VantageProject:
         }
         
     RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("project_data",)
+    RETURN_NAMES = ("actual_prompt",)
     FUNCTION = "apply"
-    CATEGORY = "Vantage"
+    CATEGORY = "Onix Management"
     
     def IS_NODE_ONLY_RUNNING_ON_EXECUTED(self):
         # This method is required if your node has 'ui' outputs
@@ -198,27 +198,27 @@ class VantageProject:
         file_id = ""
         if is_file:
             try:
-                selected_path = os.path.join(VANTAGE_DIR, sel)
+                selected_path = os.path.join(ONIX_DIR, sel)
                 old = {}
                 if os.path.isfile(selected_path):
                     with open(selected_path, "r", encoding="utf-8") as f:
                         old = json.load(f)
                 file_id = (old.get("id") or "").strip()
-                _log(f"[Vantage] apply: selected file {sel} id={file_id}")
+                _log(f"[Onix] apply: selected file {sel} id={file_id}")
             except Exception as e:
-                _log(f"[Vantage] apply: load selected id failed: {e}")
+                _log(f"[Onix] apply: load selected id failed: {e}")
 
         if existing_project:
             pid = (project_id or "").strip() or file_id or uuid.uuid4().hex
         else:
             pid = uuid.uuid4().hex
-        _log(f"[Vantage] apply: effective pid={pid}")
+        _log(f"[Onix] apply: effective pid={pid}")
 
-        proj_dir = os.path.join(VANTAGE_DIR, pid)
+        proj_dir = os.path.join(ONIX_DIR, pid)
         os.makedirs(proj_dir, exist_ok=True)
-        _log(f"[Vantage] apply: start prompt: {start_prompt}")
+        _log(f"[Onix] apply: start prompt: {start_prompt}")
         effective_start_prompt = start_prompt
-        _log(f"[Vantage] apply: effective_start_prompt: {effective_start_prompt}")
+        _log(f"[Onix] apply: effective_start_prompt: {effective_start_prompt}")
         safe_name = project_name or f"project_{pid[:8]}"
 
         # Decide whether this is an update to an existing file or a new file
@@ -237,17 +237,23 @@ class VantageProject:
 
             # Ensure we don't overwrite an existing file unintentionally
             candidate = base_name
-            if os.path.isfile(os.path.join(VANTAGE_DIR, candidate)):
+            if os.path.join(ONIX_DIR, candidate):
                 # If the exact name exists and we are not in update mode, make it unique
+                # NOTE: logic bug fix in previous code: os.path.join just returns path, os.path.isfile checks it
+                # fixing logic to match original intent
+                pass
+            
+            # Re-implementing correctly from original logic
+            if os.path.isfile(os.path.join(ONIX_DIR, candidate)):
                 stem, ext = os.path.splitext(base_name)
                 suffix = 1
-                while os.path.isfile(os.path.join(VANTAGE_DIR, f"{stem}_{suffix}{ext}")):
+                while os.path.isfile(os.path.join(ONIX_DIR, f"{stem}_{suffix}{ext}")):
                     suffix += 1
                 candidate = f"{stem}_{suffix}{ext}"
             target_file = candidate
             is_update = False
 
-        path = os.path.join(VANTAGE_DIR, target_file)
+        path = os.path.join(ONIX_DIR, target_file)
 
         prompt_val = positive_text or ""
         lines = []
@@ -281,18 +287,23 @@ class VantageProject:
                             if s
                         ]
             except Exception as e:
-                _log(f"[Vantage] apply: merge read failed: {e}")
+                _log(f"[Onix] apply: merge read failed: {e}")
 
         # Save: overwrite only in update mode OR when creating a brand-new unique file
         try:
             _save_json(path, data)
-            _log(f"[Vantage] apply: saved {target_file} (update={is_update})")
+            _log(f"[Onix] apply: saved {target_file} (update={is_update})")
         except Exception as e:
-            _log(f"[Vantage] apply: save failed: {e}")
+            _log(f"[Onix] apply: save failed: {e}")
 
 
         payload = json.dumps(data, ensure_ascii=False)
-        _log(f"[Vantage] apply: returning payload file={data['file']} id={data['id']}")
+        _log(f"[Onix] apply: returning payload file={data['file']} id={data['id']}")
+
+        # Extract specific prompt line based on start_prompt index
+        actual_prompt = ""
+        if 0 <= effective_start_prompt < len(lines):
+            actual_prompt = lines[effective_start_prompt]
         
         project_entry = {
             "id": data["id"],
@@ -306,6 +317,4 @@ class VantageProject:
         }
         # Option A: group under a single ui key
         ui_payload = {"project": [project_entry]}
-        return {"ui": ui_payload, "result": (payload,)}
-        #return (payload,)
-
+        return {"ui": ui_payload, "result": (actual_prompt,)}

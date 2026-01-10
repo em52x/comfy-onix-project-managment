@@ -33,11 +33,11 @@ function sanitizeFileName(name) {
 }
 
 async function fetchProjectFiles() {
-  const res = await fetch("/vantage/projects", { credentials: "same-origin" });
-  console.log("[VantageJS] GET /vantage/projects ->", res.status);
+  const res = await fetch("/onix/projects", { credentials: "same-origin" });
+  console.log("[OnixJS] GET /onix/projects ->", res.status);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  console.log("[VantageJS] list files:", data);
+  console.log("[OnixJS] list files:", data);
   const files = Array.isArray(data.files) ? data.files.filter(Boolean) : [];
   return ["none", ...files];
 }
@@ -46,7 +46,7 @@ async function fetchProjectFiles() {
 function hookAfterExec(node, handler) {
   const orig = node.onExecuted?.bind(node);
   node.onExecuted = function (output) {
-    console.log("[VantageJS] onExecuted payload:", output);
+    console.log("[OnixJS] onExecuted payload:", output);
     try {
       handler(output);
     } catch (e) {
@@ -62,7 +62,7 @@ function hookAfterExec(node, handler) {
       // Docs show executed contains node id and output = ui payload when ui is returned by node. [web:3]
       const nid = msg?.node_id ?? msg?.node;
       if (nid !== node.id) return;
-      console.log("[VantageJS] socket executed:", msg);
+      console.log("[OnixJS] socket executed:", msg);
       try {
         handler(msg?.output ?? msg);
       } catch (e) {
@@ -73,9 +73,9 @@ function hookAfterExec(node, handler) {
 }
 
 app.registerExtension({
-  name: "VantageProjectNode",
+  name: "OnixProjectNode",
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== "VantageProject") return;
+    if (nodeData.name !== "OnixProject") return;
 
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
@@ -116,7 +116,7 @@ app.registerExtension({
           this.setDirtyCanvas(true, true);
           requestAnimationFrame(() => this.setDirtyCanvas(true, true));
         } catch (e) {
-          console.warn("[VantageJS] refresh failed:", e);
+          console.warn("[OnixJS] refresh failed:", e);
         }
       };
 
@@ -126,10 +126,10 @@ app.registerExtension({
         if (!fileName || fileName === "none") return;
         const safe = sanitizeFileName(fileName);
         try {
-          const res = await fetch(`/vantage/preview?file=${encodeURIComponent(safe)}`, {
+          const res = await fetch(`/onix/preview?file=${encodeURIComponent(safe)}`, {
             credentials: "same-origin",
           });
-          console.log("[VantageJS] preview", safe, "->", res.status);
+          console.log("[OnixJS] preview", safe, "->", res.status);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
 
@@ -145,7 +145,7 @@ app.registerExtension({
           setNameDisabled(projectNameW, !!data.existing);
           this.graph?.setDirtyCanvas?.(true, true);
         } catch (e) {
-          console.warn("[VantageJS] preview failed:", e);
+          console.warn("[OnixJS] preview failed:", e);
         }
       };
 
@@ -169,7 +169,7 @@ app.registerExtension({
 
       // Executed -> bind state (refresh list, set id, set existing true)
       const postBind = (file, pid) => {
-        console.log("[VantageJS] postBind file=", file, "pid=", pid);
+        console.log("[OnixJS] postBind file=", file, "pid=", pid);
         if (!file) return;
 
         if (existingW) existingW.value = true;
@@ -203,7 +203,7 @@ app.registerExtension({
         try { obj = JSON.parse(output); } catch {}
       }
 
-      if (!obj) { console.warn("[VantageJS] no usable executed payload"); return; }
+      if (!obj) { console.warn("[OnixJS] no usable executed payload"); return; }
       postBind(obj.file || null, obj.id || null);
     });
 
