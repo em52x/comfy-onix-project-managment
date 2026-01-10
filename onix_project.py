@@ -1,5 +1,8 @@
 import uuid
 import os, json, time
+import torch
+import numpy as np
+from PIL import Image
 from typing import Dict, Any
 
 try:
@@ -33,10 +36,14 @@ def _last_index_plus_one(base_dir: str) -> int:
         if not os.path.isdir(base_dir):
             return 0
         max_idx = -1
+        import re
+        # Look for files like scene_0000.png
+        pattern = re.compile(r"scene_(\d+)\.png")
         for name in os.listdir(base_dir):
-            if name.isdigit():
+            match = pattern.match(name)
+            if match:
                 try:
-                    idx = int(name)
+                    idx = int(match.group(1))
                     if idx > max_idx:
                         max_idx = idx
                 except Exception:
@@ -62,11 +69,10 @@ def _list_projects():
 async def onix_preview(request):
     _log("[Onix] preview hit")
     if aiohttp_web is None:
-        # Fallback: return basic JSON-like dict; Comfy will try to serialize it
-        return {"error": "aiohttp not available"}  # middleware will wrap
+        return {"error": "aiohttp not available"}
 
     fname = request.query.get("file", "")
-    fname = _safe_name(fname)
+    fname = "".join(c for c in (fname or "") if c.isalnum() or c in "._-")
     _log(f"[Onix] preview file param: {fname}")
 
     if not fname or not fname.lower().endswith(".json"):
@@ -77,22 +83,22 @@ async def onix_preview(request):
         return aiohttp_web.json_response({"error": "not found"}, status=404)
 
     try:
-        data = _load_json(path)
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
     except Exception as e:
         return aiohttp_web.json_response({"error": str(e)}, status=500)
 
-    # Prefer prompt_lines -> prompt (joined) for UI
     plines = data.get("prompt_lines")
     if isinstance(plines, list):
         ui_prompt = "\n".join(str(x) for x in plines)
-        line_count = len(plines)
     else:
         ui_prompt = data.get("prompt") or ""
-        line_count = len(prompt.split("\n"))  # number of lines [web:19]
 
     proj_id = data.get("id") or uuid.uuid4().hex
     proj_dir = os.path.join(ONIX_DIR, proj_id)
-    start_from_folders = _last_index_plus_one(proj_dir)
+    
+    # Calculate start prompt based on existing images
+    start_from_files = _last_index_plus_one(proj_dir)
     
     resp = {
         "id": proj_id,
@@ -100,7 +106,7 @@ async def onix_preview(request):
         "prompt": ui_prompt,
         "prompt_lines": plines if isinstance(plines, list) else None,
         "existing": True,
-        "start_prompt": start_from_folders,
+        "start_prompt": start_from_files,
         "file": fname,
     }
     return aiohttp_web.json_response(resp, status=200)
@@ -113,208 +119,216 @@ async def onix_list_projects(request):
         _log(f"[Onix] list_projects error: {e}")
         return aiohttp_web.json_response({"files": []}, status=200)
 
-def _load_json(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def _save_json(path: str, data: Dict[str, Any]) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
-def _safe_name(s: str) -> str:
-    return "".join(c for c in (s or "") if c.isalnum() or c in "._-")
-
-def get_onix_dir() -> str:
-    """Return the absolute path to the shared Onix directory."""
-    return ONIX_DIR
-
 def setup_routes(app):
     if aiohttp_web is None:
-        _log("[Onix] aiohttp not available; routes not registered")
         return
     try:
         app.router.add_get("/onix/preview", onix_preview)
-        _log("[Onix] Registered /onix/preview")
-    except Exception as e:
-        _log(f"[Onix] preview route exists/failed: {e}")
-    try:
         app.router.add_get("/onix/projects", onix_list_projects)
-        _log("[Onix] Registered /onix/projects")
-    except Exception as e:
-        _log(f"[Onix] projects route exists/failed: {e}")
+    except Exception:
+        pass
 
-# Fallback registration at import time
+# Fallback registration
 try:
     from server import PromptServer as _PS
     setup_routes(_PS.instance.app)
-    _log("[Onix] Routes registered via PromptServer fallback")
-except Exception as _e:
-    _log(f"[Onix] Fallback route registration failed: {_e}")
+except Exception:
+    pass
 
-# —— Node class (only the relevant apply shown) ——
 class OnixProject:
     @classmethod
     def INPUT_TYPES(cls):
-        # Include "none" always in enum to avoid validation flaps
         files = _list_projects()
         enum = ["none"] + files
         return {
             "required": {
+                "enable_image_management": ("BOOLEAN", {"default": True}),
                 "project_name": ("STRING", {"default": "", "multiline": False}),
                 "positive_text": ("STRING", {"default": "", "multiline": True}),
                 "start_prompt": ("INT", {"default": 0}),
             },
             "optional": {
+                "initial_image": ("IMAGE",),
                 "project_list": (enum, {"default": "none"}),
                 "existing_project": ("BOOLEAN", {"default": False}),
                 "project_id": ("STRING", {"default": ""}),
             },
         }
         
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("actual_prompt",)
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "INT")
+    RETURN_NAMES = ("actual_prompt", "image", "project_id", "current_index")
     FUNCTION = "apply"
     CATEGORY = "Onix Management"
     
-    def IS_NODE_ONLY_RUNNING_ON_EXECUTED(self):
-        # This method is required if your node has 'ui' outputs
-        return False
-        
     def apply(
         self,
-        project_list: str,
+        enable_image_management: bool,
         project_name: str,
         positive_text: str,
         start_prompt: int,
+        initial_image: torch.Tensor = None,
+        project_list: str = "none",
         existing_project: bool = False,
         project_id: str = "",
     ):
         sel = (project_list or "").strip()
         is_file = bool(sel and sel.lower().endswith(".json") and sel != "none")
 
-        # Prefer id from selected file, then provided id, else new
         file_id = ""
         if is_file:
             try:
                 selected_path = os.path.join(ONIX_DIR, sel)
-                old = {}
                 if os.path.isfile(selected_path):
                     with open(selected_path, "r", encoding="utf-8") as f:
                         old = json.load(f)
-                file_id = (old.get("id") or "").strip()
-                _log(f"[Onix] apply: selected file {sel} id={file_id}")
-            except Exception as e:
-                _log(f"[Onix] apply: load selected id failed: {e}")
+                    file_id = (old.get("id") or "").strip()
+            except Exception:
+                pass
 
         if existing_project:
             pid = (project_id or "").strip() or file_id or uuid.uuid4().hex
         else:
             pid = uuid.uuid4().hex
-        _log(f"[Onix] apply: effective pid={pid}")
 
         proj_dir = os.path.join(ONIX_DIR, pid)
         os.makedirs(proj_dir, exist_ok=True)
-        _log(f"[Onix] apply: start prompt: {start_prompt}")
-        effective_start_prompt = start_prompt
-        _log(f"[Onix] apply: effective_start_prompt: {effective_start_prompt}")
-        safe_name = project_name or f"project_{pid[:8]}"
-
-        # Decide whether this is an update to an existing file or a new file
-        target_file = None
-        is_update = False
-
+        
+        # Determine target filename for JSON
         if is_file and existing_project:
-            # Overwrite the selected file
             target_file = sel
-            is_update = True
         else:
-            # Create a new file name from project_name
-            base_name = _safe_name(project_name) or f"project_{pid[:8]}"
+            def safe_n(s): return "".join(c for c in (s or "") if c.isalnum() or c in "._-")
+            base_name = safe_n(project_name) or f"project_{{pid[:8]}}"
             if not base_name.lower().endswith(".json"):
                 base_name = f"{base_name}.json"
-
-            # Ensure we don't overwrite an existing file unintentionally
             candidate = base_name
-            if os.path.join(ONIX_DIR, candidate):
-                # If the exact name exists and we are not in update mode, make it unique
-                # NOTE: logic bug fix in previous code: os.path.join just returns path, os.path.isfile checks it
-                # fixing logic to match original intent
-                pass
-            
-            # Re-implementing correctly from original logic
             if os.path.isfile(os.path.join(ONIX_DIR, candidate)):
                 stem, ext = os.path.splitext(base_name)
                 suffix = 1
-                while os.path.isfile(os.path.join(ONIX_DIR, f"{stem}_{suffix}{ext}")):
+                while os.path.isfile(os.path.join(ONIX_DIR, f"{stem}_{{suffix}}{{ext}}")):
                     suffix += 1
-                candidate = f"{stem}_{suffix}{ext}"
+                candidate = f"{stem}_{{suffix}}{{ext}}"
             target_file = candidate
-            is_update = False
 
         path = os.path.join(ONIX_DIR, target_file)
 
+        # Process Prompts
         prompt_val = positive_text or ""
-        lines = []
-        for ln in prompt_val.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            s = ln.strip()
-            if s:  # keep only actual prompts, skip blanks
-                lines.append(s)
+        lines = [s.strip() for s in prompt_val.replace("\r\n", "\n").replace("\r", "\n").split("\n") if s.strip()]
 
         data = {
             "id": pid,
-            "name": project_name or f"project_{pid[:8]}",
+            "name": project_name or f"project_{{pid[:8]}}",
             "prompt": "\n".join(lines),
             "prompt_lines": lines,
             "existing": True,
             "file": target_file,
-            "start_prompt": effective_start_prompt,
+            "start_prompt": start_prompt,
             "ts": time.time(),
         }
 
-        # Only merge from disk if updating an existing file
-        if is_update:
-            try:
-                if os.path.isfile(path):
-                    with open(path, "r", encoding="utf-8") as f:
-                        old = json.load(f)
-                    if old.get("id"):
-                        data["id"] = old.get("id") or pid
-                    if "prompt_lines" not in old and isinstance(old.get("prompt"), str):
-                        data["prompt_lines"] = [
-                            s for s in (p.strip() for p in old["prompt"].replace("\r\n","\n").replace("\r","\n").split("\n"))
-                            if s
-                        ]
-            except Exception as e:
-                _log(f"[Onix] apply: merge read failed: {e}")
-
-        # Save: overwrite only in update mode OR when creating a brand-new unique file
+        # Save JSON
         try:
-            _save_json(path, data)
-            _log(f"[Onix] apply: saved {target_file} (update={is_update})")
-        except Exception as e:
-            _log(f"[Onix] apply: save failed: {e}")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
-
-        payload = json.dumps(data, ensure_ascii=False)
-        _log(f"[Onix] apply: returning payload file={data['file']} id={data['id']}")
-
-        # Extract specific prompt line based on start_prompt index
-        actual_prompt = ""
-        if 0 <= effective_start_prompt < len(lines):
-            actual_prompt = lines[effective_start_prompt]
+        # Handle Image Logic (Strict Mode)
+        out_image = None
         
-        project_entry = {
-            "id": data["id"],
-            "name": data["name"],
-            "prompt": data["prompt"],
-            "prompt_lines": data["prompt_lines"],
-            "existing": bool(data.get("existing", True)),
-            "file": data["file"],
-            "start_prompt": data["start_prompt"],
-            "ts": data["ts"],
+        if enable_image_management:
+            if start_prompt == 0:
+                # Require initial_image
+                if initial_image is None:
+                    raise ValueError(f"[Onix] Image Management is ON, start_prompt is 0, but NO 'initial_image' was connected. Please connect an image to start the project.")
+                
+                # Save scene_0000.png
+                img_path = os.path.join(proj_dir, "scene_0000.png")
+                # Handle batch dimension -> use first frame
+                i = 255. * initial_image[0].cpu().numpy()
+                img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+                img.save(img_path)
+                _log(f"[Onix] Saved initial frame to {img_path}")
+                out_image = initial_image
+            
+            else:
+                # start_prompt > 0. We MUST load previous frame.
+                prev_idx = start_prompt - 1
+                prev_img_path = os.path.join(proj_dir, f"scene_{{prev_idx:04d}}.png")
+                
+                if not os.path.isfile(prev_img_path):
+                    raise FileNotFoundError(f"[Onix] Image Management is ON. Expected previous frame at '{prev_img_path}' for prompt index {start_prompt} (previous={prev_idx}), but it DOES NOT EXIST. Cannot resume.")
+                
+                # Load it
+                try:
+                    img = Image.open(prev_img_path).convert("RGB")
+                    img_np = np.array(img).astype(np.float32) / 255.0
+                    out_image = torch.from_numpy(img_np)[None,]
+                    _log(f"[Onix] Loaded frame from {prev_img_path}")
+                except Exception as e:
+                    raise RuntimeError(f"[Onix] Failed to load previous frame '{prev_img_path}': {e}")
+        
+        # Fallback / Management OFF
+        if out_image is None:
+            # Return empty black tensor (1,64,64,3) to satisfy ComfyUI types if connected
+            out_image = torch.zeros((1, 64, 64, 3))
+
+        # Determine prompt for current index
+        actual_prompt = ""
+        if 0 <= start_prompt < len(lines):
+            actual_prompt = lines[start_prompt]
+
+        ui_payload = {"project": [{
+            "id": pid, "name": data["name"], "prompt": data["prompt"],
+            "prompt_lines": lines, "existing": True, "file": target_file,
+            "start_prompt": start_prompt, "ts": data["ts"]
+        }]}
+
+        return {"ui": ui_payload, "result": (actual_prompt, out_image, pid, start_prompt)}
+
+
+class OnixProjectSaver:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "project_id": ("STRING", {"default": ""}),
+                "current_index": ("INT", {"default": 0}),
+            },
         }
-        # Option A: group under a single ui key
-        ui_payload = {"project": [project_entry]}
-        return {"ui": ui_payload, "result": (actual_prompt,)}
+
+    RETURN_TYPES = ()
+    OUTPUT_NODE = True
+    FUNCTION = "save_last_frame"
+    CATEGORY = "Onix Management"
+
+    def save_last_frame(self, images, project_id, current_index):
+        if not project_id:
+            _log("[Onix Saver] No project_id provided. Skipping save.")
+            return {{}}
+
+        proj_dir = os.path.join(ONIX_DIR, project_id)
+        if not os.path.isdir(proj_dir):
+            _log(f"[Onix Saver] Project directory not found: {proj_dir}")
+            return {{}}
+
+        # Logic: Save for the NEXT index
+        next_idx = current_index + 1
+        filename = f"scene_{{next_idx:04d}}.png"
+        save_path = os.path.join(proj_dir, filename)
+
+        # Get the LAST image from the batch
+        # images shape is (B, H, W, C)
+        last_image_tensor = images[-1]
+        
+        try:
+            i = 255. * last_image_tensor.cpu().numpy()
+            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            img.save(save_path)
+            _log(f"[Onix Saver] Saved next frame start: {save_path}")
+        except Exception as e:
+             _log(f"[Onix Saver] Failed to save frame: {e}")
+
+        return {{}}
