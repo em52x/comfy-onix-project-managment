@@ -385,19 +385,46 @@ class OnixVideoSaver:
         # Extraer la ruta de forma robusta
         source_path = ""
         try:
-            if isinstance(video_path, str):
+            # Case 0: Objeto con atributo path/file_path explícito (VideoFromComponents etc)
+            if hasattr(video_path, "path"):
+                source_path = str(video_path.path)
+            elif hasattr(video_path, "file_path"):
+                source_path = str(video_path.file_path)
+            elif hasattr(video_path, "filename"):
+                source_path = str(video_path.filename)
+            elif hasattr(video_path, "filenames") and len(video_path.filenames) > 0:
+                source_path = str(video_path.filenames[0])
+                
+            # Case 1: Standard string
+            elif isinstance(video_path, str):
                 source_path = video_path
+            # Case 2: List of strings
             elif isinstance(video_path, list) and len(video_path) > 0:
-                source_path = str(video_path[0])
+                # Si es lista de objetos, intentar extraer de ellos
+                first = video_path[0]
+                if hasattr(first, "path"): source_path = str(first.path)
+                elif hasattr(first, "file_path"): source_path = str(first.file_path)
+                elif isinstance(first, str): source_path = first
+            # Case 3: Dict wrapper
             elif isinstance(video_path, dict) and "filenames" in video_path:
                 source_path = str(video_path["filenames"][0])
-            else:
-                source_path = str(video_path)
+            # Case 4: Fallback
+            elif not source_path:
+                s_rep = str(video_path)
+                if not s_rep.startswith("<"): # Evitar objetos genéricos
+                    source_path = s_rep
+                    
         except Exception as e:
             _log(f"[Onix Video] Error procesando input: {e}")
+            # Intento de debug para el usuario si falla
+            _log(f"[Onix Video] Objeto recibido: {type(video_path)} - Dir: {dir(video_path)}")
         
         source_path = source_path.strip('"').strip("'")
         
+        if not source_path or source_path.startswith("<"):
+             _log(f"[Onix Video] No se pudo extraer una ruta v lida del objeto: {video_path}")
+             return {"ui": {}, "result": ("",)}
+
         # Si no es una ruta absoluta, buscar en la carpeta 'output' de ComfyUI
         if not os.path.isabs(source_path) or not os.path.isfile(source_path):
             potential_path = os.path.join(COMFY_ROOT, "output", os.path.basename(source_path))
