@@ -271,9 +271,13 @@ class OnixProject:
                 out_image = initial_image
             
             else:
-                # Resume: Load shot_{scene}_{prev_idx}.png
-                prev_idx = start_prompt - 1
-                filename = f"shot_{scene_number}_{prev_idx:04d}.png"
+                # Resume: Load shot_{scene}_{start_prompt}.png (the output of the previous step serves as input for this one)
+                # If start_prompt is 1, we want the image saved by step 0 (which is saved as 0001).
+                # Wait... Saver saves as current_index + 1.
+                # Step 0 -> Saves 0001.
+                # Step 1 -> Needs 0001.
+                # So yes, we need file index = start_prompt.
+                filename = f"shot_{scene_number}_{start_prompt:04d}.png"
                 prev_img_path = os.path.join(proj_dir, filename)
                 
                 if not os.path.isfile(prev_img_path):
