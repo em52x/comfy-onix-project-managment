@@ -360,7 +360,7 @@ class OnixVideoSaver:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "video_path": ("STRING", {"forceInput": True}),
+                "video_path": ("*",), # Acepta cualquier tipo (cable universal)
                 "project_id": ("STRING", {"default": ""}),
                 "current_index": ("INT", {"default": 0}),
                 "scene_number": ("INT", {"default": 1}),
@@ -377,38 +377,48 @@ class OnixVideoSaver:
         if not project_id:
             _log("[Onix Video] No project_id provided.")
             return ("",)
-            
-        # Handle input variations (list of paths vs single string)
-        if isinstance(video_path, list) and len(video_path) > 0:
-            source_path = str(video_path[0])
-        else:
-            source_path = str(video_path)
 
-        # Basic cleanup of source path (remove quotes if any)
+        # Extraer la ruta de forma robusta
+        source_path = ""
+        try:
+            if isinstance(video_path, str):
+                source_path = video_path
+            elif isinstance(video_path, list) and len(video_path) > 0:
+                source_path = str(video_path[0])
+            elif isinstance(video_path, dict) and "filenames" in video_path:
+                source_path = str(video_path["filenames"][0])
+            else:
+                source_path = str(video_path)
+        except Exception as e:
+            _log(f"[Onix Video] Error procesando input: {e}")
+        
         source_path = source_path.strip('"').strip("'")
-            
+        
+        # Si no es una ruta absoluta, buscar en la carpeta 'output' de ComfyUI
+        if not os.path.isabs(source_path) or not os.path.isfile(source_path):
+            potential_path = os.path.join(COMFY_ROOT, "output", os.path.basename(source_path))
+            if os.path.isfile(potential_path):
+                source_path = potential_path
+
         if not os.path.isfile(source_path):
-             _log(f"[Onix Video] Source file not found or invalid: {source_path}")
+             _log(f"[Onix Video] No se encontr¾ el archivo de video en: {source_path}")
              return ("",)
 
         proj_dir = os.path.join(ONIX_DIR, project_id)
-        if not os.path.isdir(proj_dir):
-            _log(f"[Onix Video] Project dir not found: {proj_dir}")
-            return ("",)
+        os.makedirs(proj_dir, exist_ok=True)
             
         video_out_dir = os.path.join(proj_dir, "Video_Shots_Output")
         os.makedirs(video_out_dir, exist_ok=True)
 
-        # Naming: videoShot_{scene}_{next_idx}.mp4
-        # Using current_index + 1 to align with the 'finished shot' logic
+        # Nomenclatura: videoShot_{scene}_{next_idx}.mp4
         next_idx = current_index + 1
         filename = f"videoShot_{scene_number}_{next_idx:04d}.mp4"
         dest_path = os.path.join(video_out_dir, filename)
 
         try:
             shutil.copy2(source_path, dest_path)
-            _log(f"[Onix Video] Saved video to: {dest_path}")
+            _log(f"[Onix Video] Video guardado en proyecto: {dest_path}")
             return (dest_path,)
         except Exception as e:
-            _log(f"[Onix Video] Error saving video: {e}")
+            _log(f"[Onix Video] Error al copiar video: {e}")
             return ("",)
