@@ -39,7 +39,7 @@ def _last_index_plus_one(base_dir: str, scene_num: int) -> int:
         max_idx = -1
         # Pattern: shot_{scene}_{index}.png -> e.g. shot_1_0005.png
         # We escape the curly braces for regex repetition manually if needed, but here we construct string
-        pattern_str = f"shot_{{scene_num}}_(\d+)\.png"
+        pattern_str = f"shot_{scene_num}_(\d+)\.png"
         pattern = re.compile(pattern_str)
         
         for name in os.listdir(base_dir):
