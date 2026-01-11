@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 from typing import Dict, Any
 import re
+import shutil
 
 try:
     from aiohttp import web as aiohttp_web
@@ -354,5 +355,60 @@ class OnixProjectSaver:
         except Exception as e:
              _log(f"[Onix Saver] Error saving: {e}")
 
-        out_tensor = last_image_tensor.unsqueeze(0)
-        return {"ui": {}, "result": (out_tensor,)}
+class OnixVideoSaver:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video_path": ("STRING", {"forceInput": True}),
+                "project_id": ("STRING", {"default": ""}),
+                "current_index": ("INT", {"default": 0}),
+                "scene_number": ("INT", {"default": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("saved_video_path",)
+    OUTPUT_NODE = True
+    FUNCTION = "save_video_shot"
+    CATEGORY = "Onix Management"
+
+    def save_video_shot(self, video_path, project_id, current_index, scene_number):
+        if not project_id:
+            _log("[Onix Video] No project_id provided.")
+            return ("",)
+            
+        # Handle input variations (list of paths vs single string)
+        if isinstance(video_path, list) and len(video_path) > 0:
+            source_path = str(video_path[0])
+        else:
+            source_path = str(video_path)
+
+        # Basic cleanup of source path (remove quotes if any)
+        source_path = source_path.strip('"').strip("'")
+            
+        if not os.path.isfile(source_path):
+             _log(f"[Onix Video] Source file not found or invalid: {source_path}")
+             return ("",)
+
+        proj_dir = os.path.join(ONIX_DIR, project_id)
+        if not os.path.isdir(proj_dir):
+            _log(f"[Onix Video] Project dir not found: {proj_dir}")
+            return ("",)
+            
+        video_out_dir = os.path.join(proj_dir, "Video_Shots_Output")
+        os.makedirs(video_out_dir, exist_ok=True)
+
+        # Naming: videoShot_{scene}_{next_idx}.mp4
+        # Using current_index + 1 to align with the 'finished shot' logic
+        next_idx = current_index + 1
+        filename = f"videoShot_{scene_number}_{next_idx:04d}.mp4"
+        dest_path = os.path.join(video_out_dir, filename)
+
+        try:
+            shutil.copy2(source_path, dest_path)
+            _log(f"[Onix Video] Saved video to: {dest_path}")
+            return (dest_path,)
+        except Exception as e:
+            _log(f"[Onix Video] Error saving video: {e}")
+            return ("",)
