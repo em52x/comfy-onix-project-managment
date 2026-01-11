@@ -198,7 +198,7 @@ class OnixProject:
             target_file = sel
         else:
             def safe_n(s): return "".join(c for c in (s or "") if c.isalnum() or c in "._-")
-            base_name = safe_n(project_name) or f"project_{{pid[:8]}}"
+            base_name = safe_n(project_name) or f"project_{pid[:8]}"
             if not base_name.lower().endswith(".json"):
                 base_name = f"{base_name}.json"
             candidate = base_name
@@ -218,7 +218,7 @@ class OnixProject:
 
         data = {
             "id": pid,
-            "name": project_name or f"project_{{pid[:8]}}",
+            "name": project_name or f"project_{pid[:8]}",
             "prompt": "\n".join(lines),
             "prompt_lines": lines,
             "existing": True,
@@ -255,7 +255,7 @@ class OnixProject:
             else:
                 # start_prompt > 0. We MUST load previous frame.
                 prev_idx = start_prompt - 1
-                prev_img_path = os.path.join(proj_dir, f"scene_{{prev_idx:04d}}.png")
+                prev_img_path = os.path.join(proj_dir, f"scene_{prev_idx:04d}.png")
                 
                 if not os.path.isfile(prev_img_path):
                     raise FileNotFoundError(f"[Onix] Image Management is ON. Expected previous frame at '{prev_img_path}' for prompt index {start_prompt} (previous={prev_idx}), but it DOES NOT EXIST. Cannot resume.")
@@ -320,7 +320,7 @@ class OnixProjectSaver:
 
         # Logic: Save for the NEXT index
         next_idx = current_index + 1
-        filename = f"scene_{{next_idx:04d}}.png"
+        filename = f"scene_{next_idx:04d}.png"
         save_path = os.path.join(proj_dir, filename)
 
         # Get the LAST image from the batch
