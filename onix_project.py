@@ -355,6 +355,10 @@ class OnixProjectSaver:
         except Exception as e:
              _log(f"[Onix Saver] Error saving: {e}")
 
+        out_tensor = last_image_tensor.unsqueeze(0)
+        return {"ui": {}, "result": (out_tensor,)}
+
+
 class OnixVideoSaver:
     @classmethod
     def INPUT_TYPES(cls):
@@ -376,7 +380,7 @@ class OnixVideoSaver:
     def save_video_shot(self, video_path, project_id, current_index, scene_number):
         if not project_id:
             _log("[Onix Video] No project_id provided.")
-            return ("",)
+            return {"ui": {}, "result": ("",)}
 
         # Extraer la ruta de forma robusta
         source_path = ""
@@ -402,7 +406,7 @@ class OnixVideoSaver:
 
         if not os.path.isfile(source_path):
              _log(f"[Onix Video] No se encontr¾ el archivo de video en: {source_path}")
-             return ("",)
+             return {"ui": {}, "result": ("",)}
 
         proj_dir = os.path.join(ONIX_DIR, project_id)
         os.makedirs(proj_dir, exist_ok=True)
@@ -418,7 +422,7 @@ class OnixVideoSaver:
         try:
             shutil.copy2(source_path, dest_path)
             _log(f"[Onix Video] Video guardado en proyecto: {dest_path}")
-            return (dest_path,)
+            return {"ui": {}, "result": (dest_path,)}
         except Exception as e:
             _log(f"[Onix Video] Error al copiar video: {e}")
-            return ("",)
+            return {"ui": {}, "result": ("",)}
