@@ -171,8 +171,8 @@ class OnixProject:
             },
         }
         
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "INT", "INT")
-    RETURN_NAMES = ("actual_prompt", "image", "project_id", "current_index", "scene_number")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "INT", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("actual_prompt", "image", "project_id", "current_index", "scene_number", "project_name", "past_prompts_context")
     FUNCTION = "apply"
     CATEGORY = "Onix Management"
     
@@ -301,13 +301,23 @@ class OnixProject:
         if 0 <= start_prompt < len(lines):
             actual_prompt = lines[start_prompt]
 
+        # Generate Past Prompts Context
+        past_prompts_context = ""
+        if start_prompt > 0:
+            limit = min(start_prompt, len(lines))
+            history = lines[:limit]
+            if history:
+                header = "Here are the prompts used for the previous shots in this scene. Use them to maintain visual and narrative continuity:\n"
+                body = "\n".join([f"- {h}" for h in history])
+                past_prompts_context = header + body
+
         ui_payload = {"project": [{
             "id": pid, "name": data["name"], "prompt": data["prompt"],
             "prompt_lines": lines, "existing": True, "file": target_file,
             "start_prompt": start_prompt, "scene_number": scene_number, "ts": data["ts"]
         }]}
 
-        return {"ui": ui_payload, "result": (actual_prompt, out_image, pid, start_prompt, scene_number)}
+        return {"ui": ui_payload, "result": (actual_prompt, out_image, pid, start_prompt, scene_number, data["name"], past_prompts_context)}
 
 
 class OnixProjectSaver:
@@ -359,97 +369,31 @@ class OnixProjectSaver:
         return {"ui": {}, "result": (out_tensor,)}
 
 
-class OnixVideoSaver:
+class OnixVideoPrefix:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "video_path": ("*",), # Acepta cualquier tipo (cable universal)
-                "project_id": ("STRING", {"default": ""}),
-                "current_index": ("INT", {"default": 0}),
+                "project_name": ("STRING", {"forceInput": True}),
                 "scene_number": ("INT", {"default": 1}),
             },
         }
 
     RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("saved_video_path",)
-    OUTPUT_NODE = True
-    FUNCTION = "save_video_shot"
+    RETURN_NAMES = ("filename_prefix",)
+    OUTPUT_NODE = False
+    FUNCTION = "gen_prefix"
     CATEGORY = "Onix Management"
 
-    def save_video_shot(self, video_path, project_id, current_index, scene_number):
-        if not project_id:
-            _log("[Onix Video] No project_id provided.")
-            return {"ui": {}, "result": ("",)}
-
-        # Extraer la ruta de forma robusta
-        source_path = ""
-        try:
-            # Case 0: Objeto con atributo path/file_path explícito (VideoFromComponents etc)
-            if hasattr(video_path, "path"):
-                source_path = str(video_path.path)
-            elif hasattr(video_path, "file_path"):
-                source_path = str(video_path.file_path)
-            elif hasattr(video_path, "filename"):
-                source_path = str(video_path.filename)
-            elif hasattr(video_path, "filenames") and len(video_path.filenames) > 0:
-                source_path = str(video_path.filenames[0])
-                
-            # Case 1: Standard string
-            elif isinstance(video_path, str):
-                source_path = video_path
-            # Case 2: List of strings
-            elif isinstance(video_path, list) and len(video_path) > 0:
-                # Si es lista de objetos, intentar extraer de ellos
-                first = video_path[0]
-                if hasattr(first, "path"): source_path = str(first.path)
-                elif hasattr(first, "file_path"): source_path = str(first.file_path)
-                elif isinstance(first, str): source_path = first
-            # Case 3: Dict wrapper
-            elif isinstance(video_path, dict) and "filenames" in video_path:
-                source_path = str(video_path["filenames"][0])
-            # Case 4: Fallback
-            elif not source_path:
-                s_rep = str(video_path)
-                if not s_rep.startswith("<"): # Evitar objetos genéricos
-                    source_path = s_rep
-                    
-        except Exception as e:
-            _log(f"[Onix Video] Error procesando input: {e}")
-            # Intento de debug para el usuario si falla
-            _log(f"[Onix Video] Objeto recibido: {type(video_path)} - Dir: {dir(video_path)}")
-        
-        source_path = source_path.strip('"').strip("'")
-        
-        if not source_path or source_path.startswith("<"):
-             _log(f"[Onix Video] No se pudo extraer una ruta v lida del objeto: {video_path}")
-             return {"ui": {}, "result": ("",)}
-
-        # Si no es una ruta absoluta, buscar en la carpeta 'output' de ComfyUI
-        if not os.path.isabs(source_path) or not os.path.isfile(source_path):
-            potential_path = os.path.join(COMFY_ROOT, "output", os.path.basename(source_path))
-            if os.path.isfile(potential_path):
-                source_path = potential_path
-
-        if not os.path.isfile(source_path):
-             _log(f"[Onix Video] No se encontr¾ el archivo de video en: {source_path}")
-             return {"ui": {}, "result": ("",)}
-
-        proj_dir = os.path.join(ONIX_DIR, project_id)
-        os.makedirs(proj_dir, exist_ok=True)
+    def gen_prefix(self, project_name, scene_number):
+        # Sanitizar nombre para evitar problemas de ruta
+        safe_name = "".join(c for c in project_name if c.isalnum() or c in "._- ")
+        if not safe_name:
+            safe_name = "Untitled_Project"
             
-        video_out_dir = os.path.join(proj_dir, "Video_Shots_Output")
-        os.makedirs(video_out_dir, exist_ok=True)
-
-        # Nomenclatura: videoShot_{scene}_{next_idx}.mp4
-        next_idx = current_index + 1
-        filename = f"videoShot_{scene_number}_{next_idx:04d}.mp4"
-        dest_path = os.path.join(video_out_dir, filename)
-
-        try:
-            shutil.copy2(source_path, dest_path)
-            _log(f"[Onix Video] Video guardado en proyecto: {dest_path}")
-            return {"ui": {}, "result": (dest_path,)}
-        except Exception as e:
-            _log(f"[Onix Video] Error al copiar video: {e}")
-            return {"ui": {}, "result": ("",)}
+        # Prefix: Project/Scene/Scene
+        # Result example: MyTravel/1/1_0001.mp4 (Comfy adds _0001)
+        # Note: ComfyUI Save Video nodes usually create subfolders if slashes are present.
+        prefix = f"{safe_name}/{scene_number}/{scene_number}"
+        
+        return (prefix,)
