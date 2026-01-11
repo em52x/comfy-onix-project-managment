@@ -34,10 +34,8 @@ function sanitizeFileName(name) {
 
 async function fetchProjectFiles() {
   const res = await fetch("/onix/projects", { credentials: "same-origin" });
-  console.log("[OnixJS] GET /onix/projects ->", res.status);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) return ["none"];
   const data = await res.json();
-  console.log("[OnixJS] list files:", data);
   const files = Array.isArray(data.files) ? data.files.filter(Boolean) : [];
   return ["none", ...files];
 }
@@ -46,12 +44,7 @@ async function fetchProjectFiles() {
 function hookAfterExec(node, handler) {
   const orig = node.onExecuted?.bind(node);
   node.onExecuted = function (output) {
-    console.log("[OnixJS] onExecuted payload:", output);
-    try {
-      handler(output);
-    } catch (e) {
-      console.warn(e);
-    }
+    try { handler(output); } catch (e) {}
     return orig ? orig(output) : undefined;
   };
 
@@ -59,15 +52,9 @@ function hookAfterExec(node, handler) {
   if (s && !node.__vp_exec_hooked) {
     node.__vp_exec_hooked = true;
     s.on("executed", (msg) => {
-      // Docs show executed contains node id and output = ui payload when ui is returned by node. [web:3]
       const nid = msg?.node_id ?? msg?.node;
       if (nid !== node.id) return;
-      console.log("[OnixJS] socket executed:", msg);
-      try {
-        handler(msg?.output ?? msg);
-      } catch (e) {
-        console.warn(e);
-      }
+      try { handler(msg?.output ?? msg); } catch (e) {}
     });
   }
 }
@@ -88,6 +75,7 @@ app.registerExtension({
       const existingW = getW("existing_project");
       const idW = getW("project_id");
       const startPromptW = getW("start_prompt");
+      const sceneW = getW("scene_number");
 
       hideInternalWidgets(this);
 
@@ -98,11 +86,9 @@ app.registerExtension({
           const ctrl = projectListW;
           if (!ctrl) return;
 
-          // Support legacy and modern combo widgets
           if (ctrl.options) ctrl.options.values = items;
           ctrl.values = items;
 
-          // Selection logic
           let nextVal = ctrl.value;
           if (preferredFile && items.includes(preferredFile)) nextVal = preferredFile;
           else if (!items.includes(nextVal)) nextVal = items[0] || "none";
@@ -114,22 +100,22 @@ app.registerExtension({
           this.onWidgetChanged?.(ctrl, nextVal, "project_list");
 
           this.setDirtyCanvas(true, true);
-          requestAnimationFrame(() => this.setDirtyCanvas(true, true));
-        } catch (e) {
-          console.warn("[OnixJS] refresh failed:", e);
-        }
+        } catch (e) {}
       };
 
       // Optional partial load helper
       const doPartialLoad = async () => {
         const fileName = projectListW?.value;
         if (!fileName || fileName === "none") return;
+        
+        // Pass current scene widget value to API to calculate start_prompt for THAT scene
+        const currentScene = sceneW ? sceneW.value : 1;
         const safe = sanitizeFileName(fileName);
+        
         try {
-          const res = await fetch(`/onix/preview?file=${encodeURIComponent(safe)}`, {
+          const res = await fetch(`/onix/preview?file=${encodeURIComponent(safe)}&scene=${currentScene}`, {
             credentials: "same-origin",
           });
-          console.log("[OnixJS] preview", safe, "->", res.status);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
 
@@ -140,7 +126,10 @@ app.registerExtension({
             : data.prompt || "";
           if (promptW) promptW.value = uiPrompt;
           if (existingW) existingW.value = !!data.existing;
+          
+          // API returns start_prompt specifically for the requested scene
           if (startPromptW) startPromptW.value = Number.isFinite(data.start_prompt) ? data.start_prompt : 0;
+          if (sceneW && Number.isFinite(data.scene_number)) sceneW.value = data.scene_number;
 
           setNameDisabled(projectNameW, !!data.existing);
           this.graph?.setDirtyCanvas?.(true, true);
@@ -149,7 +138,6 @@ app.registerExtension({
         }
       };
 
-      // Buttons
       const addBtn = (label, fn) => {
         const b = this.addWidget("button", label, null, () => fn());
         b.serialize = false;
@@ -162,49 +150,35 @@ app.registerExtension({
         if (projectNameW) projectNameW.value = "";
         if (promptW) promptW.value = "";
         if (startPromptW) startPromptW.value = 0;
+        // Keep sceneW as is or reset? Usually keep to allow changing scene for new project
         setNameDisabled(projectNameW, false);
         this.graph?.setDirtyCanvas?.(true, true);
       });
       addBtn("Refresh List", () => this.refreshProjectList(projectListW?.value));
 
-      // Executed -> bind state (refresh list, set id, set existing true)
-      const postBind = (file, pid) => {
-        console.log("[OnixJS] postBind file=", file, "pid=", pid);
+      const postBind = (file, pid, sceneNum) => {
         if (!file) return;
-
         if (existingW) existingW.value = true;
         if (idW && pid) idW.value = pid;
+        // Optionally update scene widget if backend returned it (it should match input)
+        // if (sceneW && sceneNum !== undefined) sceneW.value = sceneNum;
 
         this.refreshProjectList?.(file);
         setNameDisabled(projectNameW, true);
-
         this.graph?.setDirtyCanvas?.(true, true);
-        requestAnimationFrame(() => this.graph?.setDirtyCanvas?.(true, true));
       };
 
-      // Robust payload extraction:
-      // - Prefer UI payload from executed (msg.output object with id/file) per docs. [web:3]
-      // - Fallback: plain object typed output with id/file
-      // - Fallback: string or tuple[string] JSON
       hookAfterExec(this, (output) => {
       let obj = null;
-
-      // Prefer grouped UI: { project: [ {...} ] }
       if (output && output.project && Array.isArray(output.project) && output.project.length) {
         obj = output.project[0];
-      } else if (output && typeof output === "object" && (output.id || output.file)) {
-        obj = output;
       } else if (output && output.ui && typeof output.ui === "object") {
         const u = output.ui;
         if (u.project && Array.isArray(u.project) && u.project.length) obj = u.project[0];
-      } else if (Array.isArray(output) && output.length && typeof output[0] === "string") {
-        try { obj = JSON.parse(output[0]); } catch {}
-      } else if (typeof output === "string") {
-        try { obj = JSON.parse(output); } catch {}
       }
 
-      if (!obj) { console.warn("[OnixJS] no usable executed payload"); return; }
-      postBind(obj.file || null, obj.id || null);
+      if (!obj) return;
+      postBind(obj.file || null, obj.id || null, obj.scene_number);
     });
 
       return r;

@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from PIL import Image
 from typing import Dict, Any
+import re
 
 try:
     from aiohttp import web as aiohttp_web
@@ -31,14 +32,16 @@ def _log(msg: str):
 _log("[Onix] node module loaded")
 _log(f"[Onix] COMFY_ROOT={COMFY_ROOT}, ONIX_DIR={ONIX_DIR}")
 
-def _last_index_plus_one(base_dir: str) -> int:
+def _last_index_plus_one(base_dir: str, scene_num: int) -> int:
     try:
         if not os.path.isdir(base_dir):
             return 0
         max_idx = -1
-        import re
-        # Look for files like scene_0000.png
-        pattern = re.compile(r"scene_(\d+)\.png")
+        # Pattern: shot_{scene}_{index}.png -> e.g. shot_1_0005.png
+        # We escape the curly braces for regex repetition manually if needed, but here we construct string
+        pattern_str = f"shot_{{scene_num}}_(\d+)\.png"
+        pattern = re.compile(pattern_str)
+        
         for name in os.listdir(base_dir):
             match = pattern.match(name)
             if match:
@@ -48,7 +51,10 @@ def _last_index_plus_one(base_dir: str) -> int:
                         max_idx = idx
                 except Exception:
                     pass
-        return max_idx + 1 if max_idx >= 0 else 0
+        # Logic fix: if max_idx is 0 (scene_0000.png), we are at prompt 0. 
+        # If max_idx is 1 (scene_0001.png), we are ready for prompt 1.
+        # So return max_idx directly. If no files (-1), return 0.
+        return max_idx if max_idx >= 0 else 0
     except Exception:
         return 0
 
@@ -75,6 +81,13 @@ async def onix_preview(request):
     fname = "".join(c for c in (fname or "") if c.isalnum() or c in "._-")
     _log(f"[Onix] preview file param: {fname}")
 
+    # We need scene number to calculate start prompt correctly
+    scene_param = request.query.get("scene", "1")
+    try:
+        scene_num = int(scene_param)
+    except:
+        scene_num = 1
+
     if not fname or not fname.lower().endswith(".json"):
         return aiohttp_web.json_response({"error": "bad file"}, status=400)
 
@@ -97,8 +110,8 @@ async def onix_preview(request):
     proj_id = data.get("id") or uuid.uuid4().hex
     proj_dir = os.path.join(ONIX_DIR, proj_id)
     
-    # Calculate start prompt based on existing images
-    start_from_files = _last_index_plus_one(proj_dir)
+    # Calculate start prompt based on existing images for THIS scene
+    start_from_files = _last_index_plus_one(proj_dir, scene_num)
     
     resp = {
         "id": proj_id,
@@ -107,6 +120,7 @@ async def onix_preview(request):
         "prompt_lines": plines if isinstance(plines, list) else None,
         "existing": True,
         "start_prompt": start_from_files,
+        "scene_number": scene_num,
         "file": fname,
     }
     return aiohttp_web.json_response(resp, status=200)
@@ -144,6 +158,7 @@ class OnixProject:
             "required": {
                 "enable_image_management": ("BOOLEAN", {"default": True}),
                 "project_name": ("STRING", {"default": "", "multiline": False}),
+                "scene_number": ("INT", {"default": 1, "min": 0}),
                 "positive_text": ("STRING", {"default": "", "multiline": True}),
                 "start_prompt": ("INT", {"default": 0}),
             },
@@ -155,8 +170,8 @@ class OnixProject:
             },
         }
         
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "INT")
-    RETURN_NAMES = ("actual_prompt", "image", "project_id", "current_index")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "INT", "INT")
+    RETURN_NAMES = ("actual_prompt", "image", "project_id", "current_index", "scene_number")
     FUNCTION = "apply"
     CATEGORY = "Onix Management"
     
@@ -164,6 +179,7 @@ class OnixProject:
         self,
         enable_image_management: bool,
         project_name: str,
+        scene_number: int,
         positive_text: str,
         start_prompt: int,
         initial_image: torch.Tensor = None,
@@ -224,6 +240,7 @@ class OnixProject:
             "existing": True,
             "file": target_file,
             "start_prompt": start_prompt,
+            "scene_number": scene_number,
             "ts": time.time(),
         }
 
@@ -241,40 +258,40 @@ class OnixProject:
             if start_prompt == 0:
                 # Require initial_image
                 if initial_image is None:
-                    raise ValueError(f"[Onix] Image Management is ON, start_prompt is 0, but NO 'initial_image' was connected. Please connect an image to start the project.")
+                    raise ValueError(f"[Onix] Start Prompt 0 in Scene {scene_number} requires an 'initial_image' input.")
                 
-                # Save scene_0000.png
-                img_path = os.path.join(proj_dir, "scene_0000.png")
-                # Handle batch dimension -> use first frame
+                # Save shot_{scene}_0000.png
+                filename = f"shot_{scene_number}_0000.png"
+                img_path = os.path.join(proj_dir, filename)
+                
                 i = 255. * initial_image[0].cpu().numpy()
                 img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
                 img.save(img_path)
-                _log(f"[Onix] Saved initial frame to {img_path}")
+                _log(f"[Onix] Saved initial frame: {filename}")
                 out_image = initial_image
             
             else:
-                # start_prompt > 0. We MUST load previous frame.
+                # Resume: Load shot_{scene}_{prev_idx}.png
                 prev_idx = start_prompt - 1
-                prev_img_path = os.path.join(proj_dir, f"scene_{prev_idx:04d}.png")
+                filename = f"shot_{scene_number}_{prev_idx:04d}.png"
+                prev_img_path = os.path.join(proj_dir, filename)
                 
                 if not os.path.isfile(prev_img_path):
-                    raise FileNotFoundError(f"[Onix] Image Management is ON. Expected previous frame at '{prev_img_path}' for prompt index {start_prompt} (previous={prev_idx}), but it DOES NOT EXIST. Cannot resume.")
+                    raise FileNotFoundError(f"[Onix] Missing previous frame for resume: {filename} in {proj_dir}")
                 
-                # Load it
                 try:
                     img = Image.open(prev_img_path).convert("RGB")
                     img_np = np.array(img).astype(np.float32) / 255.0
                     out_image = torch.from_numpy(img_np)[None,]
-                    _log(f"[Onix] Loaded frame from {prev_img_path}")
+                    _log(f"[Onix] Loaded frame: {filename}")
                 except Exception as e:
-                    raise RuntimeError(f"[Onix] Failed to load previous frame '{prev_img_path}': {e}")
+                    raise RuntimeError(f"[Onix] Failed to load {filename}: {e}")
         
-        # Fallback / Management OFF
+        # Fallback
         if out_image is None:
-            # Return empty black tensor (1,64,64,3) to satisfy ComfyUI types if connected
             out_image = torch.zeros((1, 64, 64, 3))
 
-        # Determine prompt for current index
+        # Determine prompt
         actual_prompt = ""
         if 0 <= start_prompt < len(lines):
             actual_prompt = lines[start_prompt]
@@ -282,10 +299,10 @@ class OnixProject:
         ui_payload = {"project": [{
             "id": pid, "name": data["name"], "prompt": data["prompt"],
             "prompt_lines": lines, "existing": True, "file": target_file,
-            "start_prompt": start_prompt, "ts": data["ts"]
+            "start_prompt": start_prompt, "scene_number": scene_number, "ts": data["ts"]
         }]}
 
-        return {"ui": ui_payload, "result": (actual_prompt, out_image, pid, start_prompt)}
+        return {"ui": ui_payload, "result": (actual_prompt, out_image, pid, start_prompt, scene_number)}
 
 
 class OnixProjectSaver:
@@ -296,6 +313,7 @@ class OnixProjectSaver:
                 "images": ("IMAGE",),
                 "project_id": ("STRING", {"default": ""}),
                 "current_index": ("INT", {"default": 0}),
+                "scene_number": ("INT", {"default": 1}),
             },
         }
 
@@ -305,38 +323,32 @@ class OnixProjectSaver:
     FUNCTION = "save_last_frame"
     CATEGORY = "Onix Management"
 
-    def save_last_frame(self, images, project_id, current_index):
-        # Default empty return for safety
+    def save_last_frame(self, images, project_id, current_index, scene_number):
         empty_tensor = torch.zeros((1, 64, 64, 3))
         
         if not project_id:
-            _log("[Onix Saver] No project_id provided. Skipping save.")
+            _log("[Onix Saver] No project_id provided.")
             return {"ui": {}, "result": (empty_tensor,)}
 
         proj_dir = os.path.join(ONIX_DIR, project_id)
         if not os.path.isdir(proj_dir):
-            _log(f"[Onix Saver] Project directory not found: {proj_dir}")
+            _log(f"[Onix Saver] Dir not found: {proj_dir}")
             return {"ui": {}, "result": (empty_tensor,)}
 
-        # Logic: Save for the NEXT index
+        # Save NEXT index: shot_{scene}_{current+1}.png
         next_idx = current_index + 1
-        filename = f"scene_{next_idx:04d}.png"
+        filename = f"shot_{scene_number}_{next_idx:04d}.png"
         save_path = os.path.join(proj_dir, filename)
 
-        # Get the LAST image from the batch
-        # images shape is (B, H, W, C)
         last_image_tensor = images[-1]
         
         try:
             i = 255. * last_image_tensor.cpu().numpy()
             img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
             img.save(save_path)
-            _log(f"[Onix Saver] Saved next frame start: {save_path}")
+            _log(f"[Onix Saver] Saved: {filename}")
         except Exception as e:
-             _log(f"[Onix Saver] Failed to save frame: {e}")
+             _log(f"[Onix Saver] Error saving: {e}")
 
-        # Return the saved image (adding batch dimension back)
-        # last_image_tensor is (H, W, C), need (1, H, W, C)
         out_tensor = last_image_tensor.unsqueeze(0)
-        
         return {"ui": {}, "result": (out_tensor,)}
