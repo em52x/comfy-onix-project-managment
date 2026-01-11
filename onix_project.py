@@ -205,9 +205,9 @@ class OnixProject:
             if os.path.isfile(os.path.join(ONIX_DIR, candidate)):
                 stem, ext = os.path.splitext(base_name)
                 suffix = 1
-                while os.path.isfile(os.path.join(ONIX_DIR, f"{stem}_{{suffix}}{{ext}}")):
+                while os.path.isfile(os.path.join(ONIX_DIR, f"{stem}_{suffix}{ext}")):
                     suffix += 1
-                candidate = f"{stem}_{{suffix}}{{ext}}"
+                candidate = f"{stem}_{suffix}{ext}"
             target_file = candidate
 
         path = os.path.join(ONIX_DIR, target_file)
@@ -299,20 +299,24 @@ class OnixProjectSaver:
             },
         }
 
-    RETURN_TYPES = ()
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("saved_frame",)
     OUTPUT_NODE = True
     FUNCTION = "save_last_frame"
     CATEGORY = "Onix Management"
 
     def save_last_frame(self, images, project_id, current_index):
+        # Default empty return for safety
+        empty_tensor = torch.zeros((1, 64, 64, 3))
+        
         if not project_id:
             _log("[Onix Saver] No project_id provided. Skipping save.")
-            return {{}}
+            return {"ui": {}, "result": (empty_tensor,)}
 
         proj_dir = os.path.join(ONIX_DIR, project_id)
         if not os.path.isdir(proj_dir):
             _log(f"[Onix Saver] Project directory not found: {proj_dir}")
-            return {{}}
+            return {"ui": {}, "result": (empty_tensor,)}
 
         # Logic: Save for the NEXT index
         next_idx = current_index + 1
@@ -331,4 +335,8 @@ class OnixProjectSaver:
         except Exception as e:
              _log(f"[Onix Saver] Failed to save frame: {e}")
 
-        return {{}}
+        # Return the saved image (adding batch dimension back)
+        # last_image_tensor is (H, W, C), need (1, H, W, C)
+        out_tensor = last_image_tensor.unsqueeze(0)
+        
+        return {"ui": {}, "result": (out_tensor,)}
