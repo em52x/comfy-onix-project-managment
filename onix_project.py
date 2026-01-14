@@ -6,6 +6,12 @@ from PIL import Image
 from typing import Dict, Any
 import re
 import shutil
+import folder_paths
+
+try:
+    import torchaudio
+except ImportError:
+    torchaudio = None
 
 try:
     from aiohttp import web as aiohttp_web
@@ -397,3 +403,91 @@ class OnixVideoPrefix:
         prefix = f"{safe_name}/{scene_number}/{scene_number}"
         
         return (prefix,)
+
+
+class OnixAudioSlicer:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "audio": ("AUDIO",),
+                "current_index": ("INT", {"default": 0}),
+                "duration_per_prompt": ("FLOAT", {"default": 5.0, "min": 0.1, "step": 0.1}),
+                "enable_preview": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO",)
+    RETURN_NAMES = ("sliced_audio",)
+    FUNCTION = "slice_audio"
+    CATEGORY = "Onix Management"
+
+    def slice_audio(self, audio, current_index, duration_per_prompt, enable_preview):
+        waveform = audio["waveform"]  # shape usually (batch, channels, samples)
+        sample_rate = audio["sample_rate"]
+        
+        start_time = current_index * duration_per_prompt
+        end_time = start_time + duration_per_prompt
+        
+        start_sample = int(start_time * sample_rate)
+        end_sample = int(end_time * sample_rate)
+        
+        total_samples = waveform.shape[-1]
+        
+        if start_sample >= total_samples:
+             # Return small silence if out of bounds to avoid crash
+             sliced_waveform = torch.zeros_like(waveform)[..., :100]
+             _log(f"[Onix Audio] Index {current_index} start time {start_time}s is beyond audio length. Returning silence.")
+        else:
+            end_sample = min(end_sample, total_samples)
+            # Support both (batch, ch, samples) and (ch, samples) just in case, though usually it is 3D in Comfy
+            if waveform.ndim == 3:
+                sliced_waveform = waveform[:, :, start_sample:end_sample]
+            elif waveform.ndim == 2:
+                sliced_waveform = waveform[:, start_sample:end_sample]
+            else:
+                 # Fallback for 1D or other
+                 sliced_waveform = waveform[..., start_sample:end_sample]
+                 
+            _log(f"[Onix Audio] Sliced from {start_time:.2f}s to {end_time:.2f}s (Index {current_index})")
+            
+        result = {"waveform": sliced_waveform, "sample_rate": sample_rate}
+        
+        # UI Preview Logic
+        ui_payload = {}
+        if enable_preview and torchaudio is not None:
+            try:
+                # Create a temp filename. We use a fixed prefix but random suffix/ts to avoid caching issues
+                # actually ComfyUI cleans temp folder on restart usually.
+                rand_id = uuid.uuid4().hex[:8]
+                filename = f"onix_slice_preview_{rand_id}.wav"
+                temp_dir = folder_paths.get_temp_directory()
+                full_path = os.path.join(temp_dir, filename)
+                
+                # Save using torchaudio
+                # torchaudio expects (channels, samples). Comfy often has (batch, channels, samples).
+                # We usually take the first item in batch for preview if batch > 1.
+                
+                save_wave = sliced_waveform
+                if save_wave.ndim == 3:
+                    # (Batch, Channels, Samples) -> Take first batch -> (Channels, Samples)
+                    save_wave = save_wave[0]
+                
+                # Ensure it's on CPU
+                save_wave = save_wave.cpu()
+                
+                torchaudio.save(full_path, save_wave, sample_rate)
+                
+                ui_payload = {
+                    "ui": {
+                        "audio": [{
+                            "filename": filename,
+                            "type": "temp",
+                            "subfolder": ""
+                        }]
+                    }
+                }
+            except Exception as e:
+                _log(f"[Onix Audio] Failed to save preview: {e}")
+
+        return (result, ui_payload)
