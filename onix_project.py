@@ -178,8 +178,8 @@ class OnixProject:
             },
         }
         
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "INT", "INT", "STRING", "STRING")
-    RETURN_NAMES = ("actual_prompt", "image", "project_id", "current_index", "scene_number", "project_name", "past_prompts_context")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "INT", "INT", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("actual_prompt", "image", "project_id", "current_index", "scene_number", "project_name", "past_prompts_context", "prompt_batch")
     FUNCTION = "apply"
     CATEGORY = "Onix Management"
     
@@ -298,10 +298,13 @@ class OnixProject:
         if out_image is None:
             out_image = torch.zeros((1, 64, 64, 3))
 
-        # Determine Prompts Logic
-        final_prompts = []
-        
-        # Parse force_duration string: "0,1,2" -> [0, 1, 2]
+        # 1. actual_prompt: Always Single Prompt based on start_prompt
+        actual_prompt = ""
+        if 0 <= start_prompt < len(lines):
+            actual_prompt = lines[start_prompt]
+
+        # 2. prompt_batch: Concatenation based on force_duration or fallback to actual_prompt
+        prompt_batch = actual_prompt
         offsets = []
         if force_duration and isinstance(force_duration, str):
             parts = [p.strip() for p in force_duration.split(",") if p.strip()]
@@ -311,18 +314,14 @@ class OnixProject:
                 except:
                     pass
         
-        # If valid offsets exist, use them
         if len(offsets) > 0:
+            batch_lines = []
             for offset in offsets:
                 idx = start_prompt + offset
                 if 0 <= idx < len(lines):
-                    final_prompts.append(lines[idx])
-        else:
-            # Standard single prompt behavior
-            if 0 <= start_prompt < len(lines):
-                final_prompts.append(lines[start_prompt])
-
-        actual_prompt = "\n".join(final_prompts)
+                    batch_lines.append(lines[idx])
+            if batch_lines:
+                prompt_batch = "\n".join(batch_lines)
 
         # Generate Past Prompts Context
         past_prompts_context = ""
@@ -340,7 +339,7 @@ class OnixProject:
             "start_prompt": start_prompt, "scene_number": scene_number, "ts": data["ts"]
         }]}
 
-        return {"ui": ui_payload, "result": (actual_prompt, out_image, pid, start_prompt, scene_number, data["name"], past_prompts_context)}
+        return {"ui": ui_payload, "result": (actual_prompt, out_image, pid, start_prompt, scene_number, data["name"], past_prompts_context, prompt_batch)}
 
 
 class OnixProjectSaver:
