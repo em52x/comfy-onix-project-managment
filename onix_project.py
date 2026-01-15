@@ -352,6 +352,10 @@ class OnixProjectSaver:
                 "current_index": ("INT", {"default": 0}),
                 "scene_number": ("INT", {"default": 1}),
             },
+            "optional": {
+                "force_duration": ("STRING", {"forceInput": True, "default": ""}),
+                "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+            }
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -360,7 +364,7 @@ class OnixProjectSaver:
     FUNCTION = "save_last_frame"
     CATEGORY = "Onix Management"
 
-    def save_last_frame(self, images, project_id, current_index, scene_number):
+    def save_last_frame(self, images, project_id, current_index, scene_number, force_duration="", fps=24):
         empty_tensor = torch.zeros((1, 64, 64, 3))
         
         if not project_id:
@@ -372,23 +376,74 @@ class OnixProjectSaver:
             _log(f"[Onix Saver] Dir not found: {proj_dir}")
             return {"ui": {}, "result": (empty_tensor,)}
 
-        # Save NEXT index: shot_{scene}_{current+1}.png
-        next_idx = current_index + 1
-        filename = f"shot_{scene_number}_{next_idx:04d}.png"
-        save_path = os.path.join(proj_dir, filename)
-
-        last_image_tensor = images[-1]
+        # Parse offsets
+        offsets = []
+        if force_duration:
+            parts = [p.strip() for p in force_duration.split(",") if p.strip()]
+            for p in parts:
+                try:
+                    offsets.append(int(p))
+                except:
+                    pass
         
-        try:
-            i = 255. * last_image_tensor.cpu().numpy()
-            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-            img.save(save_path)
-            _log(f"[Onix Saver] Saved: {filename}")
-        except Exception as e:
-             _log(f"[Onix Saver] Error saving: {e}")
+        # If no offsets provided, treat as single standard save (equivalent to offset 0 relative to end)
+        if not offsets:
+            # Legacy behavior: just save the very last frame of the batch as current_index + 1
+            next_idx = current_index + 1
+            filename = f"shot_{scene_number}_{next_idx:04d}.png"
+            save_path = os.path.join(proj_dir, filename)
+            
+            last_image_tensor = images[-1]
+            try:
+                i = 255. * last_image_tensor.cpu().numpy()
+                img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+                img.save(save_path)
+                _log(f"[Onix Saver] Saved: {filename}")
+            except Exception as e:
+                _log(f"[Onix Saver] Error saving: {e}")
+            
+            return {"ui": {}, "result": (last_image_tensor.unsqueeze(0),)}
 
-        out_tensor = last_image_tensor.unsqueeze(0)
-        return {"ui": {}, "result": (out_tensor,)}
+        # Multi-frame save logic based on 5s chunks (aligned with OnixAudioSlicer)
+        frames_per_unit = int(5.0 * fps)
+        last_saved_tensor = empty_tensor
+        
+        # Determine total frames available
+        total_frames = len(images)
+
+        for i, offset_val in enumerate(offsets):
+            # Calculate logical end frame for this chunk
+            # If we have offsets 0, 1... 
+            # i=0 (offset 0) -> target 5s mark -> frame index (1 * frames_per_unit) - 1
+            # i=1 (offset 1) -> target 10s mark -> frame index (2 * frames_per_unit) - 1
+            
+            target_idx = ((i + 1) * frames_per_unit) - 1
+            
+            # Safety clamp: if generation was shorter/longer, ensure we stay within bounds
+            if target_idx >= total_frames:
+                target_idx = total_frames - 1
+            
+            # Extract frame
+            img_tensor = images[target_idx]
+            
+            # Calculate filename index: start_prompt + offset + 1
+            # e.g. start=3, offset=0 -> save 4. offset=1 -> save 5.
+            save_index = current_index + offset_val + 1
+            
+            filename = f"shot_{scene_number}_{save_index:04d}.png"
+            save_path = os.path.join(proj_dir, filename)
+            
+            try:
+                arr = 255. * img_tensor.cpu().numpy()
+                img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+                img.save(save_path)
+                _log(f"[Onix Saver] Saved multi-frame: {filename} (source frame {target_idx})")
+            except Exception as e:
+                _log(f"[Onix Saver] Error saving {filename}: {e}")
+            
+            last_saved_tensor = img_tensor
+
+        return {"ui": {}, "result": (last_saved_tensor.unsqueeze(0),)}
 
 
 class OnixVideoPrefix:
