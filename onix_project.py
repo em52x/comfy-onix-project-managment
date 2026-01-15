@@ -174,7 +174,7 @@ class OnixProject:
                 "project_list": (enum, {"default": "none"}),
                 "existing_project": ("BOOLEAN", {"default": False}),
                 "project_id": ("STRING", {"default": ""}),
-                "force_duration": ("INDEX_LIST",),
+                "force_duration": ("STRING", {"forceInput": True, "default": ""}),
             },
         }
         
@@ -194,7 +194,7 @@ class OnixProject:
         project_list: str = "none",
         existing_project: bool = False,
         project_id: str = "",
-        force_duration: list = None,
+        force_duration: str = "",
     ):
         sel = (project_list or "").strip()
         is_file = bool(sel and sel.lower().endswith(".json") and sel != "none")
@@ -280,12 +280,6 @@ class OnixProject:
                 out_image = initial_image
             
             else:
-                # Resume: Load shot_{scene}_{start_prompt}.png (the output of the previous step serves as input for this one)
-                # If start_prompt is 1, we want the image saved by step 0 (which is saved as 0001).
-                # Wait... Saver saves as current_index + 1.
-                # Step 0 -> Saves 0001.
-                # Step 1 -> Needs 0001.
-                # So yes, we need file index = start_prompt.
                 filename = f"shot_{scene_number}_{start_prompt:04d}.png"
                 prev_img_path = os.path.join(proj_dir, filename)
                 
@@ -307,9 +301,19 @@ class OnixProject:
         # Determine Prompts Logic
         final_prompts = []
         
-        # If force_duration is a valid list of offsets (e.g., [0, 1, 2]), use them
-        if isinstance(force_duration, list) and len(force_duration) > 0:
-            for offset in force_duration:
+        # Parse force_duration string: "0,1,2" -> [0, 1, 2]
+        offsets = []
+        if force_duration and isinstance(force_duration, str):
+            parts = [p.strip() for p in force_duration.split(",") if p.strip()]
+            for p in parts:
+                try:
+                    offsets.append(int(p))
+                except:
+                    pass
+        
+        # If valid offsets exist, use them
+        if len(offsets) > 0:
+            for offset in offsets:
                 idx = start_prompt + offset
                 if 0 <= idx < len(lines):
                     final_prompts.append(lines[idx])
@@ -433,28 +437,23 @@ class OnixAudioSlicer:
             }
         }
 
-    RETURN_TYPES = ("AUDIO", "INDEX_LIST", "INT",)
+    RETURN_TYPES = ("AUDIO", "STRING", "INT",)
     RETURN_NAMES = ("sliced_audio", "force_duration", "frame_count",)
     FUNCTION = "slice_audio"
     CATEGORY = "Onix Management"
 
     def slice_audio(self, audio, current_index, duration_per_prompt, enable_preview, fps=24):
         # 1. Determine offsets (force_duration) based on duration chunks of 5s
-        # 5s -> [0]
-        # 10s -> [0, 1]
-        # 15s -> [0, 1, 2]
+        # 5s -> [0] -> "0"
+        # 10s -> [0, 1] -> "0,1"
+        # 15s -> [0, 1, 2] -> "0,1,2"
         num_chunks = int(duration_per_prompt / 5.0)
-        force_duration_list = list(range(num_chunks)) if num_chunks > 0 else [0]
+        chunks = list(range(num_chunks)) if num_chunks > 0 else [0]
+        force_duration_str = ",".join(str(c) for c in chunks)
         
         # 2. Slice Audio Logic
         waveform = audio["waveform"]
         sample_rate = audio["sample_rate"]
-        
-        start_time = current_index * 5.0 # We step by 5s logic in the project flow usually, or is it by duration?
-        # User said: "Index 7 * 5 = 35". This implies the project moves in 5s steps essentially.
-        # But if this prompt is 15s long, it covers 35s to 50s?
-        # Re-reading: "project prompt index son 5 segundos". So basic step is always 5s.
-        # If I want 15s audio, I take 5s * 3 chunks.
         
         start_time = current_index * 5.0 
         end_time = start_time + duration_per_prompt
@@ -512,4 +511,4 @@ class OnixAudioSlicer:
             except Exception as e:
                 _log(f"[Onix Audio] Failed to save preview: {e}")
 
-        return (result_audio, force_duration_list, frame_count, ui_payload)
+        return {"ui": ui_payload, "result": (result_audio, force_duration_str, frame_count,)}
