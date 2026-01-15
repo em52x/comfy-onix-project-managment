@@ -168,7 +168,6 @@ class OnixProject:
                 "scene_number": ("INT", {"default": 1, "min": 0}),
                 "positive_text": ("STRING", {"default": "", "multiline": True}),
                 "start_prompt": ("INT", {"default": 0}),
-                "base_duration": ("FLOAT", {"default": 5.0, "min": 0.1, "step": 0.1}),
             },
             "optional": {
                 "initial_image": ("IMAGE",),
@@ -191,7 +190,6 @@ class OnixProject:
         scene_number: int,
         positive_text: str,
         start_prompt: int,
-        base_duration: float = 5.0,
         initial_image: torch.Tensor = None,
         project_list: str = "none",
         existing_project: bool = False,
