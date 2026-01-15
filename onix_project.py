@@ -168,12 +168,14 @@ class OnixProject:
                 "scene_number": ("INT", {"default": 1, "min": 0}),
                 "positive_text": ("STRING", {"default": "", "multiline": True}),
                 "start_prompt": ("INT", {"default": 0}),
+                "base_duration": ("FLOAT", {"default": 5.0, "min": 0.1, "step": 0.1}),
             },
             "optional": {
                 "initial_image": ("IMAGE",),
                 "project_list": (enum, {"default": "none"}),
                 "existing_project": ("BOOLEAN", {"default": False}),
                 "project_id": ("STRING", {"default": ""}),
+                "force_duration": ("INDEX_LIST",),
             },
         }
         
@@ -189,10 +191,12 @@ class OnixProject:
         scene_number: int,
         positive_text: str,
         start_prompt: int,
+        base_duration: float = 5.0,
         initial_image: torch.Tensor = None,
         project_list: str = "none",
         existing_project: bool = False,
         project_id: str = "",
+        force_duration: list = None,
     ):
         sel = (project_list or "").strip()
         is_file = bool(sel and sel.lower().endswith(".json") and sel != "none")
@@ -302,10 +306,21 @@ class OnixProject:
         if out_image is None:
             out_image = torch.zeros((1, 64, 64, 3))
 
-        # Determine prompt
-        actual_prompt = ""
-        if 0 <= start_prompt < len(lines):
-            actual_prompt = lines[start_prompt]
+        # Determine Prompts Logic
+        final_prompts = []
+        
+        # If force_duration is a valid list of offsets (e.g., [0, 1, 2]), use them
+        if isinstance(force_duration, list) and len(force_duration) > 0:
+            for offset in force_duration:
+                idx = start_prompt + offset
+                if 0 <= idx < len(lines):
+                    final_prompts.append(lines[idx])
+        else:
+            # Standard single prompt behavior
+            if 0 <= start_prompt < len(lines):
+                final_prompts.append(lines[start_prompt])
+
+        actual_prompt = "\n".join(final_prompts)
 
         # Generate Past Prompts Context
         past_prompts_context = ""
@@ -412,30 +427,39 @@ class OnixAudioSlicer:
             "required": {
                 "audio": ("AUDIO",),
                 "current_index": ("INT", {"default": 0}),
-                "duration_per_prompt": ("FLOAT", {"default": 5.0, "min": 0.1, "step": 5.0}),
-                "fps": ("INT", {"default": 24, "min": 1, "max": 120}),
+                "duration_per_prompt": ("FLOAT", {"default": 5.0, "min": 5.0, "step": 5.0}),
                 "enable_preview": ("BOOLEAN", {"default": True}),
             },
             "optional": {
-                "force_duration": ("INT", {"forceInput": True}),
+                "fps": ("INT", {"default": 24, "min": 1, "max": 120, "forceInput": True}),
             }
         }
 
-    RETURN_TYPES = ("AUDIO", "INT",)
-    RETURN_NAMES = ("sliced_audio", "frame_count",)
+    RETURN_TYPES = ("AUDIO", "INDEX_LIST", "INT",)
+    RETURN_NAMES = ("sliced_audio", "force_duration", "frame_count",)
     FUNCTION = "slice_audio"
     CATEGORY = "Onix Management"
 
-    def slice_audio(self, audio, current_index, duration_per_prompt, fps, enable_preview, force_duration=None):
-        # 1. Determine Duration
-        duration = float(force_duration) if force_duration is not None and force_duration > 0 else duration_per_prompt
+    def slice_audio(self, audio, current_index, duration_per_prompt, enable_preview, fps=24):
+        # 1. Determine offsets (force_duration) based on duration chunks of 5s
+        # 5s -> [0]
+        # 10s -> [0, 1]
+        # 15s -> [0, 1, 2]
+        num_chunks = int(duration_per_prompt / 5.0)
+        force_duration_list = list(range(num_chunks)) if num_chunks > 0 else [0]
         
         # 2. Slice Audio Logic
-        waveform = audio["waveform"]  # shape usually (batch, channels, samples)
+        waveform = audio["waveform"]
         sample_rate = audio["sample_rate"]
         
-        start_time = current_index * duration
-        end_time = start_time + duration
+        start_time = current_index * 5.0 # We step by 5s logic in the project flow usually, or is it by duration?
+        # User said: "Index 7 * 5 = 35". This implies the project moves in 5s steps essentially.
+        # But if this prompt is 15s long, it covers 35s to 50s?
+        # Re-reading: "project prompt index son 5 segundos". So basic step is always 5s.
+        # If I want 15s audio, I take 5s * 3 chunks.
+        
+        start_time = current_index * 5.0 
+        end_time = start_time + duration_per_prompt
         
         start_sample = int(start_time * sample_rate)
         end_sample = int(end_time * sample_rate)
@@ -443,9 +467,8 @@ class OnixAudioSlicer:
         total_samples = waveform.shape[-1]
         
         if start_sample >= total_samples:
-             # Return small silence if out of bounds
              sliced_waveform = torch.zeros_like(waveform)[..., :100]
-             _log(f"[Onix Audio] Index {current_index} start time {start_time}s is beyond audio length. Returning silence.")
+             _log(f"[Onix Audio] Index {current_index} start time {start_time}s out of bounds.")
         else:
             end_sample = min(end_sample, total_samples)
             if waveform.ndim == 3:
@@ -455,13 +478,13 @@ class OnixAudioSlicer:
             else:
                  sliced_waveform = waveform[..., start_sample:end_sample]
                  
-            _log(f"[Onix Audio] Sliced {duration}s: {start_time:.2f}s to {end_time:.2f}s (Index {current_index})")
+            _log(f"[Onix Audio] Sliced {duration_per_prompt}s from {start_time:.2f}s")
             
         result_audio = {"waveform": sliced_waveform, "sample_rate": sample_rate}
         
         # 3. Calculate Frames
-        # Formula: (seconds * fps) + 1 (To match user expectation of 5s -> 121 frames at 24fps)
-        frame_count = int(duration * fps) + 1
+        # Formula: (seconds * fps) + 1
+        frame_count = int(duration_per_prompt * fps) + 1
         
         # 4. Preview Logic
         ui_payload = {}
@@ -491,4 +514,4 @@ class OnixAudioSlicer:
             except Exception as e:
                 _log(f"[Onix Audio] Failed to save preview: {e}")
 
-        return (result_audio, frame_count, ui_payload)
+        return (result_audio, force_duration_list, frame_count, ui_payload)
