@@ -570,18 +570,12 @@ class OnixAudioSlicer:
 class OnixExecutionTimer:
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "input": ("*",),
-            },
-        }
+        return {"required": {}, "optional": {}}
 
-    RETURN_TYPES = ("*",)
-    RETURN_NAMES = ("output",)
-    FUNCTION = "passthrough"
+    RETURN_TYPES = ()
+    FUNCTION = "run"
     CATEGORY = "Onix Management"
+    OUTPUT_NODE = True
 
-    def passthrough(self, **kwargs):
-        # Simply return the first value found in kwargs or None
-        val = next(iter(kwargs.values())) if kwargs else None
-        return (val,)
+    def run(self):
+        return ()
