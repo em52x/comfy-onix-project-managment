@@ -566,3 +566,22 @@ class OnixAudioSlicer:
                 _log(f"[Onix Audio] Failed to save preview: {e}")
 
         return {"ui": ui_payload, "result": (result_audio, force_duration_str, frame_count,)}
+
+class OnixExecutionTimer:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "input": ("*",),
+            },
+        }
+
+    RETURN_TYPES = ("*",)
+    RETURN_NAMES = ("output",)
+    FUNCTION = "passthrough"
+    CATEGORY = "Onix Management"
+
+    def passthrough(self, **kwargs):
+        # Simply return the first value found in kwargs or None
+        val = next(iter(kwargs.values())) if kwargs else None
+        return (val,)
